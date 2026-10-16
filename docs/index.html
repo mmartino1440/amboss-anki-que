@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AMBOSS → Anki Queue</title>
+<style>
+:root{--bg:#f7f8fb;--card:#fff;--ink:#14171f;--mute:#6b7280;--acc:#2f6fed;--line:#e5e8ef}
+@media(prefers-color-scheme:dark){:root{--bg:#12141a;--card:#1b1e27;--ink:#eef0f5;--mute:#9aa3b2;--acc:#4c8dff;--line:#2a2e3a}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,Segoe UI,sans-serif}
+main{max-width:640px;margin:0 auto;padding:40px 16px 64px}
+h1{font-size:2rem;margin:0}p.sub{color:var(--mute);margin:.25rem 0 1.5rem}
+.step{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin:14px 0}
+.step h2{font-size:1.05rem;margin:0 0 6px}.n{display:inline-grid;place-items:center;width:26px;height:26px;border-radius:50%;background:var(--acc);color:#fff;font-size:.85rem;margin-right:8px}
+.step img{max-width:100%;border-radius:10px;border:1px solid var(--line);margin-top:10px}
+a.btn{display:inline-block;background:var(--acc);color:#fff;text-decoration:none;padding:9px 16px;border-radius:9px;margin:6px 8px 0 0;font-weight:600}
+code{background:var(--bg);border:1px solid var(--line);padding:1px 7px;border-radius:6px;font-size:.92em;user-select:all}
+small{color:var(--mute)}
+</style></head><body><main>
+<h1>AMBOSS → Anki Queue</h1>
+<p class="sub">Copy cards in AMBOSS. They show up in Anki, scheduled. Setup takes ~5 minutes, once.</p>
+
+<div class="step"><h2><span class="n">1</span>Install Anki + the AnKing deck</h2>
+<a class="btn" href="https://apps.ankiweb.net">Get Anki</a><br>
+<small>Already have AnKing Step Deck? Skip this.</small></div>
+
+<div class="step"><h2><span class="n">2</span>Add AnkiConnect</h2>
+Anki → <b>Tools → Add-ons → Get Add-ons</b> → paste <code>2055492159</code> → OK → restart Anki.
+<img src="img/ankiconnect.png" alt="Get Add-ons dialog" onerror="this.remove()"></div>
+
+<div class="step"><h2><span class="n">3</span>Create the deck (once)</h2>
+Anki → <b>Tools → Create Filtered Deck</b><br>
+Name: <code>AMBOSS Queue</code> &nbsp; Search: <code>tag:AMBOSS_queue</code> &nbsp; Limit: <code>9999</code> → <b>Build</b>
+<img src="img/filtered.png" alt="Filtered deck dialog" onerror="this.remove()"></div>
+
+<div class="step"><h2><span class="n">4</span>Download the app</h2>
+<a class="btn" href="https://github.com/mmartino1440/amboss-anki-que/releases/latest/download/AMBOSS-Anki-Queue-Windows.exe">Windows</a>
+<a class="btn" href="https://github.com/mmartino1440/amboss-anki-que/releases/latest/download/AMBOSS-Anki-Queue-Mac.zip">Mac</a><br>
+<small>Windows: if blue "protected your PC" appears → <b>More info → Run anyway</b>.<br>
+Mac: unzip, <b>right-click → Open</b> the first time.</small></div>
+
+<div class="step"><h2><span class="n">5</span>Use it</h2>
+Keep Anki open + the app open. In AMBOSS, copy the Anki cards for an article. The app confirms. Then click <b>Open deck in Anki</b> → <b>Rebuild</b>. Study.
+<img src="img/app.png" alt="App window" style="max-width:300px">
+</div>
+
+<p><small>Stuck? "Can't reach Anki" = Anki isn't open or AnkiConnect (step 2) isn't installed. Not affiliated with AMBOSS or Anki.</small></p>
+</main></body></html>
