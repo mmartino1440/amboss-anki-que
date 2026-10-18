@@ -15,6 +15,8 @@ ANKI_URL = "http://127.0.0.1:8765"
 QUEUE_TAG = "AMBOSS_queue"
 FILTERED_DECK = "AMBOSS Queue"
 CONFIRM_ABOVE = 200  # guard against an overly broad search
+OWN_DECK = "AMBOSS Cards"
+CLOZE_PATTERN = re.compile(r"\{\{c\d+::")
 AMBOSS_PATTERN = re.compile(r"\bnid:\d+|tag:\S*AMBOSS", re.IGNORECASE)
 
 ACCENT = ("#2f6fed", "#4c8dff")
@@ -23,13 +25,43 @@ RED = ("#d64545", "#ff6b6b")
 MUTED = ("#6b7280", "#9aa3b2")
 
 
-def anki(action, **params):
+def anki(action, timeout=10, **params):
     body = json.dumps({"action": action, "version": 6, "params": params}).encode()
-    with urllib.request.urlopen(ANKI_URL, body, timeout=10) as resp:
+    with urllib.request.urlopen(ANKI_URL, body, timeout=timeout) as resp:
         out = json.load(resp)
     if out.get("error"):
         raise RuntimeError(out["error"])
     return out["result"]
+
+
+def clip_seq():
+    """Windows counts every copy, so re-copying identical text still registers."""
+    try:
+        import ctypes
+        return ctypes.windll.user32.GetClipboardSequenceNumber()
+    except Exception:
+        return None
+
+
+def parse_cloze_lines(text):
+    """AMBOSS 'Card Text' copy: optional header, then one cloze per line."""
+    lines = [l.strip() for l in text.splitlines()]
+    return [l for l in lines if l and l.lower() != "card text" and CLOZE_PATTERN.search(l)]
+
+
+def add_text_cards(lines):
+    """Create cloze notes for people without the AnKing deck. Returns (added, duplicates)."""
+    if "Cloze" not in anki("modelNames"):
+        raise RuntimeError("Your Anki has no 'Cloze' note type.")
+    anki("createDeck", deck=OWN_DECK)
+    tags = [QUEUE_TAG, f"{QUEUE_TAG}::{date.today().isoformat()}"]
+    notes = [{"deckName": OWN_DECK, "modelName": "Cloze", "fields": {"Text": l},
+              "tags": tags, "options": {"allowDuplicate": False}} for l in lines]
+    ok = anki("canAddNotes", notes=notes)
+    fresh = [n for n, good in zip(notes, ok) if good]
+    if fresh:
+        anki("addNotes", notes=fresh)
+    return len(fresh), len(notes) - len(fresh)
 
 
 def find_cards(query):
@@ -117,8 +149,10 @@ class App(ctk.CTk):
                       ).pack(side="right")
 
         self.last_clip = self.clipboard()
+        self.last_seq = clip_seq()
         self.refresh_status()
         self.poll()
+        self.keep_connected()
 
     # --- helpers ---
     def clipboard(self):
@@ -135,8 +169,8 @@ class App(ctk.CTk):
 
     def refresh_status(self):
         try:
-            anki("version")
-            decks = anki("deckNames")
+            anki("version", timeout=2)
+            decks = anki("deckNames", timeout=2)
             self.status.configure(text="●  Connected to Anki", text_color=GREEN)
             if FILTERED_DECK in decks:
                 self.setup_card.pack_forget()
@@ -151,9 +185,21 @@ class App(ctk.CTk):
 
     # --- actions ---
     def handle(self, query):
-        query = " ".join(query.split())
         if not self.refresh_status():
             return
+        if CLOZE_PATTERN.search(query):
+            try:
+                a, d = add_text_cards(parse_cloze_lines(query))
+                self.total += a
+                dup = f"\n{d} already in Anki: skipped" if d else ""
+                self.big.configure(text=f"✓  {a} cards created{dup}\n\nNow click Rebuild in Anki"
+                                   if a else f"Nothing new to create{dup}",
+                                   text_color=GREEN if a else MUTED)
+                self.write(f"{a} cards created in '{OWN_DECK}', {d} duplicates skipped.")
+            except Exception as e:
+                self.write(f"Error: {e}")
+            return
+        query = " ".join(query.split())
         try:
             cards = find_cards(query)
             if not cards:
@@ -171,11 +217,15 @@ class App(ctk.CTk):
             self.write(f"Error: {e}")
 
     def finish(self, cards):
-        n, u = queue_cards(cards)
+        n, u, k = queue_cards(cards)
         self.total += n
-        self.big.configure(text=f"✓  {n} cards queued\n{u} unsuspended\n\nNow click Rebuild in Anki",
-                           text_color=GREEN)
-        self.write(f"{n} cards queued ({u} unsuspended). Session total: {self.total}")
+        note = f"\n{k} already studied: left alone" if k else ""
+        if n:
+            self.big.configure(text=f"✓  {n} new cards queued{note}\n\nNow click Rebuild in Anki",
+                               text_color=GREEN)
+        else:
+            self.big.configure(text=f"Nothing new to queue{note}", text_color=MUTED)
+        self.write(f"{n} new queued ({u} unsuspended), {k} already studied skipped. Total: {self.total}")
 
     def confirm_yes(self):
         cards, self.pending = self.pending, None
@@ -194,13 +244,22 @@ class App(ctk.CTk):
         except Exception as e:
             self.write(f"Couldn't open deck: {e}")
 
+    def keep_connected(self):
+        """Re-check Anki every 3s so the app connects whenever Anki opens."""
+        self.refresh_status()
+        self.after(3000, self.keep_connected)
+
     def poll(self):
         if self.watch.get():
-            clip = self.clipboard()
-            if clip and clip != self.last_clip and AMBOSS_PATTERN.search(clip):
+            clip, seq = self.clipboard(), clip_seq()
+            if seq is not None:
+                changed = seq != self.last_seq
+            else:
+                changed = clip != self.last_clip
+            if changed and clip and (AMBOSS_PATTERN.search(clip) or CLOZE_PATTERN.search(clip)):
                 self.write("Copied from AMBOSS…")
                 self.handle(clip)
-            self.last_clip = clip
+            self.last_clip, self.last_seq = clip, seq
         self.after(1000, self.poll)
 
 
