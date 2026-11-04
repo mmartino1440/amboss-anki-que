@@ -68,31 +68,38 @@ def find_cards(query):
     return anki("findCards", query=query)
 
 
-def queue_cards(cards, bring_back=True):
-    """Queue cards for study.
-    - Never-studied cards (type 0): unsuspend + tag.
-    - Studied, active cards (you missed the question): if bring_back, tag and make
-      them due today (interval unchanged) so they show up in the queue.
-    - Studied but suspended/buried cards are always left alone.
-    Returns (n_new, n_unsuspended, n_brought_back, n_skipped)."""
+def queue_cards(cards):
+    """Queue only cards you have never studied (type 0 = new): unsuspend + tag.
+    Anything already studied, suspended or buried is left exactly as it is.
+    Returns (n_new, n_unsuspended, n_skipped)."""
     info = anki("cardsInfo", cards=cards)
     fresh = [c["cardId"] for c in info if c["type"] == 0]
-    back = [c["cardId"] for c in info
-            if bring_back and c["type"] != 0 and c["queue"] in (1, 2, 3)]
-    todo = fresh + back
-    skipped = len(cards) - len(todo)
-    if not todo:
-        return 0, 0, 0, skipped
-    suspended = [c["cardId"] for c in info if c["type"] == 0 and c["queue"] == -1]
+    skipped = len(cards) - len(fresh)
+    if not fresh:
+        return 0, 0, skipped
+    suspended = [c["cardId"] for c in info if c["queue"] == -1]
     if suspended:
         anki("unsuspend", cards=suspended)
-    review = [c["cardId"] for c in info if c["cardId"] in back and c["type"] == 2]
-    if review:
-        anki("setDueDate", cards=review, days="0")
-    notes = anki("cardsToNotes", cards=todo)
+    notes = anki("cardsToNotes", cards=fresh)
     anki("addTags", notes=notes,
          tags=f"{QUEUE_TAG} {QUEUE_TAG}::{date.today().isoformat()}")
-    return len(fresh), len(suspended), len(back), skipped
+    return len(fresh), len(suspended), skipped
+
+
+def pull_count():
+    """How many cards Rebuild will pull into the filtered deck right now."""
+    return len(find_cards(f"tag:{QUEUE_TAG} -is:suspended"))
+
+
+def clear_queue():
+    """Remove every AMBOSS_queue tag so the next Rebuild comes back empty."""
+    cards = find_cards(f"tag:{QUEUE_TAG}")
+    if not cards:
+        return 0
+    notes = anki("cardsToNotes", cards=cards)
+    tags = [t for t in anki("getTags") if t == QUEUE_TAG or t.startswith(QUEUE_TAG + "::")]
+    anki("removeTags", notes=notes, tags=" ".join(tags))
+    return len(cards)
 
 
 class App(ctk.CTk):
@@ -139,6 +146,16 @@ class App(ctk.CTk):
         ctk.CTkButton(row, text="Cancel", width=90, fg_color="transparent", border_width=1,
                       text_color=("#222", "#ddd"), command=self.confirm_no).pack(side="left", padx=8)
 
+        qrow = ctk.CTkFrame(self, fg_color="transparent")
+        qrow.pack(fill="x", pady=(0, 8))
+        self.queue_lbl = ctk.CTkLabel(qrow, text="", anchor="w", text_color=MUTED)
+        self.queue_lbl.pack(side="left")
+        self.clear_btn = ctk.CTkButton(qrow, text="Clear queue", width=96, height=26,
+                                       fg_color="transparent", border_width=1,
+                                       text_color=("#222", "#ddd"), command=self.clear_click)
+        self.clear_btn.pack(side="right")
+        self.clear_armed = False
+
         self.open_btn = ctk.CTkButton(self, text="Open deck in Anki  →  click Rebuild", height=40,
                                       font=ctk.CTkFont(size=14, weight="bold"),
                                       command=self.open_deck)
@@ -152,8 +169,6 @@ class App(ctk.CTk):
         bar.pack(fill="x", pady=(10, 0))
         self.watch = ctk.BooleanVar(value=True)
         ctk.CTkSwitch(bar, text="Watch clipboard", variable=self.watch).pack(side="left")
-        self.bring_back = ctk.BooleanVar(value=True)
-        ctk.CTkSwitch(bar, text="Missed cards due today", variable=self.bring_back).pack(side="left", padx=14)
         self.ontop = ctk.BooleanVar(value=True)
         ctk.CTkSwitch(bar, text="On top", variable=self.ontop,
                       command=lambda: self.attributes("-topmost", self.ontop.get())
@@ -183,6 +198,10 @@ class App(ctk.CTk):
             anki("version", timeout=2)
             decks = anki("deckNames", timeout=2)
             self.status.configure(text="●  Connected to Anki", text_color=GREEN)
+            n = pull_count()
+            self.queue_lbl.configure(
+                text=f"Rebuild will pull {n} card{'s' if n != 1 else ''}",
+                text_color=MUTED if n <= CONFIRM_ABOVE else RED)
             if FILTERED_DECK in decks:
                 self.setup_card.pack_forget()
             elif not self.setup_card.winfo_ismapped():
@@ -228,20 +247,38 @@ class App(ctk.CTk):
             self.write(f"Error: {e}")
 
     def finish(self, cards):
-        n, u, b, k = queue_cards(cards, self.bring_back.get())
-        self.total += n + b
-        parts = []
+        n, u, k = queue_cards(cards)
+        self.total += n
+        note = f"\n{k} left alone (already studied, suspended or buried)" if k else ""
         if n:
-            parts.append(f"{n} new queued")
-        if b:
-            parts.append(f"{b} missed cards due today")
-        note = f"\n{k} left alone (studied, suspended or buried)" if k else ""
-        if parts:
-            self.big.configure(text=f"✓  {', '.join(parts)}{note}\n\nNow click Rebuild in Anki",
+            self.big.configure(text=f"✓  {n} new cards queued{note}\n\nNow click Rebuild in Anki",
                                text_color=GREEN)
         else:
-            self.big.configure(text=f"Nothing to queue{note}", text_color=MUTED)
-        self.write(f"{n} new ({u} unsuspended), {b} brought back, {k} left alone. Total: {self.total}")
+            self.big.configure(text=f"Nothing new to queue{note}", text_color=MUTED)
+        self.write(f"{n} new queued ({u} unsuspended), {k} left alone. Total: {self.total}")
+        self.refresh_status()
+
+    def clear_click(self):
+        """Two-click clear: first click arms, second (within 4s) removes the tags."""
+        if not self.clear_armed:
+            self.clear_armed = True
+            self.clear_btn.configure(text="Click again", fg_color=RED, text_color="white")
+            self.after(4000, self.disarm_clear)
+            return
+        self.disarm_clear()
+        try:
+            n = clear_queue()
+            self.write(f"Cleared queue: {n} cards untagged. Click Rebuild in Anki.")
+            self.big.configure(text=f"Queue cleared ({n} cards)\n\nNow click Rebuild in Anki",
+                               text_color=MUTED)
+            self.refresh_status()
+        except Exception as e:
+            self.write(f"Error: {e}")
+
+    def disarm_clear(self):
+        self.clear_armed = False
+        self.clear_btn.configure(text="Clear queue", fg_color="transparent",
+                                 text_color=("#222", "#ddd"))
 
     def confirm_yes(self):
         cards, self.pending = self.pending, None
