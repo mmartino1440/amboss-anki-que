@@ -68,22 +68,31 @@ def find_cards(query):
     return anki("findCards", query=query)
 
 
-def queue_cards(cards):
-    """Unsuspend + tag only cards you have never seen (type 0 = new).
-    Cards you've already studied are left exactly as they are, so their
-    schedules aren't disturbed. Returns (n_new, n_unsuspended, n_skipped)."""
+def queue_cards(cards, bring_back=True):
+    """Queue cards for study.
+    - Never-studied cards (type 0): unsuspend + tag.
+    - Studied, active cards (you missed the question): if bring_back, tag and make
+      them due today (interval unchanged) so they show up in the queue.
+    - Studied but suspended/buried cards are always left alone.
+    Returns (n_new, n_unsuspended, n_brought_back, n_skipped)."""
     info = anki("cardsInfo", cards=cards)
     fresh = [c["cardId"] for c in info if c["type"] == 0]
-    skipped = len(cards) - len(fresh)
-    if not fresh:
-        return 0, 0, skipped
+    back = [c["cardId"] for c in info
+            if bring_back and c["type"] != 0 and c["queue"] in (1, 2, 3)]
+    todo = fresh + back
+    skipped = len(cards) - len(todo)
+    if not todo:
+        return 0, 0, 0, skipped
     suspended = [c["cardId"] for c in info if c["type"] == 0 and c["queue"] == -1]
     if suspended:
         anki("unsuspend", cards=suspended)
-    notes = anki("cardsToNotes", cards=fresh)
+    review = [c["cardId"] for c in info if c["cardId"] in back and c["type"] == 2]
+    if review:
+        anki("setDueDate", cards=review, days="0")
+    notes = anki("cardsToNotes", cards=todo)
     anki("addTags", notes=notes,
          tags=f"{QUEUE_TAG} {QUEUE_TAG}::{date.today().isoformat()}")
-    return len(fresh), len(suspended), skipped
+    return len(fresh), len(suspended), len(back), skipped
 
 
 class App(ctk.CTk):
@@ -143,6 +152,8 @@ class App(ctk.CTk):
         bar.pack(fill="x", pady=(10, 0))
         self.watch = ctk.BooleanVar(value=True)
         ctk.CTkSwitch(bar, text="Watch clipboard", variable=self.watch).pack(side="left")
+        self.bring_back = ctk.BooleanVar(value=True)
+        ctk.CTkSwitch(bar, text="Missed cards due today", variable=self.bring_back).pack(side="left", padx=14)
         self.ontop = ctk.BooleanVar(value=True)
         ctk.CTkSwitch(bar, text="On top", variable=self.ontop,
                       command=lambda: self.attributes("-topmost", self.ontop.get())
@@ -217,15 +228,20 @@ class App(ctk.CTk):
             self.write(f"Error: {e}")
 
     def finish(self, cards):
-        n, u, k = queue_cards(cards)
-        self.total += n
-        note = f"\n{k} already studied: left alone" if k else ""
+        n, u, b, k = queue_cards(cards, self.bring_back.get())
+        self.total += n + b
+        parts = []
         if n:
-            self.big.configure(text=f"✓  {n} new cards queued{note}\n\nNow click Rebuild in Anki",
+            parts.append(f"{n} new queued")
+        if b:
+            parts.append(f"{b} missed cards due today")
+        note = f"\n{k} left alone (studied, suspended or buried)" if k else ""
+        if parts:
+            self.big.configure(text=f"✓  {', '.join(parts)}{note}\n\nNow click Rebuild in Anki",
                                text_color=GREEN)
         else:
-            self.big.configure(text=f"Nothing new to queue{note}", text_color=MUTED)
-        self.write(f"{n} new queued ({u} unsuspended), {k} already studied skipped. Total: {self.total}")
+            self.big.configure(text=f"Nothing to queue{note}", text_color=MUTED)
+        self.write(f"{n} new ({u} unsuspended), {b} brought back, {k} left alone. Total: {self.total}")
 
     def confirm_yes(self):
         cards, self.pending = self.pending, None
