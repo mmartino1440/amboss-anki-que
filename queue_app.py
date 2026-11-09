@@ -1,21 +1,19 @@
 """AMBOSS -> Anki Queue.
 
-Copy cards in AMBOSS. This app unsuspends them in Anki and tags them so your
-"AMBOSS Queue" filtered deck can pull them in. Needs Anki open with the
-AnkiConnect add-on (code 2055492159).
+Copy cards in AMBOSS. This app moves them into a normal "AMBOSS Queue" deck in
+Anki (unsuspended; already-studied ones are reset to new), so that deck holds
+exactly the cards you've added. Needs Anki open with the AnkiConnect add-on
+(code 2055492159).
 """
 import json
 import re
 import urllib.request
-from datetime import date
 
 import customtkinter as ctk
 
 ANKI_URL = "http://127.0.0.1:8765"
-QUEUE_TAG = "AMBOSS_queue"
-FILTERED_DECK = "AMBOSS Queue"
+QUEUE_DECK = "AMBOSS Queue"
 CONFIRM_ABOVE = 200  # guard against an overly broad search
-OWN_DECK = "AMBOSS Cards"
 CLOZE_PATTERN = re.compile(r"\{\{c\d+::")
 AMBOSS_PATTERN = re.compile(r"\bnid:\d+|tag:\S*AMBOSS", re.IGNORECASE)
 
@@ -53,10 +51,9 @@ def add_text_cards(lines):
     """Create cloze notes for people without the AnKing deck. Returns (added, duplicates)."""
     if "Cloze" not in anki("modelNames"):
         raise RuntimeError("Your Anki has no 'Cloze' note type.")
-    anki("createDeck", deck=OWN_DECK)
-    tags = [QUEUE_TAG, f"{QUEUE_TAG}::{date.today().isoformat()}"]
-    notes = [{"deckName": OWN_DECK, "modelName": "Cloze", "fields": {"Text": l},
-              "tags": tags, "options": {"allowDuplicate": False}} for l in lines]
+    anki("createDeck", deck=QUEUE_DECK)
+    notes = [{"deckName": QUEUE_DECK, "modelName": "Cloze", "fields": {"Text": l},
+              "options": {"allowDuplicate": False}} for l in lines]
     ok = anki("canAddNotes", notes=notes)
     fresh = [n for n, good in zip(notes, ok) if good]
     if fresh:
@@ -69,37 +66,25 @@ def find_cards(query):
 
 
 def queue_cards(cards):
-    """Queue only cards you have never studied (type 0 = new): unsuspend + tag.
-    Anything already studied, suspended or buried is left exactly as it is.
-    Returns (n_new, n_unsuspended, n_skipped)."""
+    """Move the pasted cards into the queue deck, reset to new, unsuspended.
+    Cards already in the queue deck are left exactly as they are, so pasting
+    the same card again never wipes your progress.
+    Returns (n_added, n_reset, n_unsuspended, n_already_there)."""
+    anki("createDeck", deck=QUEUE_DECK)
     info = anki("cardsInfo", cards=cards)
-    fresh = [c["cardId"] for c in info if c["type"] == 0]
-    skipped = len(cards) - len(fresh)
-    if not fresh:
-        return 0, 0, skipped
-    suspended = [c["cardId"] for c in info if c["queue"] == -1]
+    todo = [c for c in info if c["deckName"] != QUEUE_DECK]
+    already = len(cards) - len(todo)
+    if not todo:
+        return 0, 0, 0, already
+    ids = [c["cardId"] for c in todo]
+    suspended = [c["cardId"] for c in todo if c["queue"] == -1]
+    studied = [c["cardId"] for c in todo if c["type"] != 0]
     if suspended:
         anki("unsuspend", cards=suspended)
-    notes = anki("cardsToNotes", cards=fresh)
-    anki("addTags", notes=notes,
-         tags=f"{QUEUE_TAG} {QUEUE_TAG}::{date.today().isoformat()}")
-    return len(fresh), len(suspended), skipped
-
-
-def pull_count():
-    """How many cards Rebuild will pull into the filtered deck right now."""
-    return len(find_cards(f"tag:{QUEUE_TAG} -is:suspended"))
-
-
-def clear_queue():
-    """Remove every AMBOSS_queue tag so the next Rebuild comes back empty."""
-    cards = find_cards(f"tag:{QUEUE_TAG}")
-    if not cards:
-        return 0
-    notes = anki("cardsToNotes", cards=cards)
-    tags = [t for t in anki("getTags") if t == QUEUE_TAG or t.startswith(QUEUE_TAG + "::")]
-    anki("removeTags", notes=notes, tags=" ".join(tags))
-    return len(cards)
+    if studied:
+        anki("forgetCards", cards=studied)
+    anki("changeDeck", cards=ids, deck=QUEUE_DECK)
+    return len(ids), len(studied), len(suspended), already
 
 
 class App(ctk.CTk):
@@ -125,12 +110,6 @@ class App(ctk.CTk):
                                    fg_color=("#eef1f6", "#232733"), padx=14, pady=10)
         self.status.pack(fill="x")
 
-        self.setup_card = ctk.CTkFrame(self, corner_radius=12, fg_color=("#fff4e0", "#3a3120"))
-        ctk.CTkLabel(self.setup_card, justify="left", anchor="w", wraplength=380, text=(
-            f"One-time setup: in Anki go to Tools → Create Filtered Deck.\n"
-            f"Name: {FILTERED_DECK}\nSearch: tag:{QUEUE_TAG}\nLimit: 9999 → Build"),
-        ).pack(fill="x", padx=14, pady=12)
-
         self.big = ctk.CTkLabel(self, text="Waiting for a copy…", font=ctk.CTkFont(size=16),
                                 corner_radius=14, fg_color=("#e8efff", "#1c2540"),
                                 height=120)
@@ -146,17 +125,7 @@ class App(ctk.CTk):
         ctk.CTkButton(row, text="Cancel", width=90, fg_color="transparent", border_width=1,
                       text_color=("#222", "#ddd"), command=self.confirm_no).pack(side="left", padx=8)
 
-        qrow = ctk.CTkFrame(self, fg_color="transparent")
-        qrow.pack(fill="x", pady=(0, 8))
-        self.queue_lbl = ctk.CTkLabel(qrow, text="", anchor="w", text_color=MUTED)
-        self.queue_lbl.pack(side="left")
-        self.clear_btn = ctk.CTkButton(qrow, text="Clear queue", width=96, height=26,
-                                       fg_color="transparent", border_width=1,
-                                       text_color=("#222", "#ddd"), command=self.clear_click)
-        self.clear_btn.pack(side="right")
-        self.clear_armed = False
-
-        self.open_btn = ctk.CTkButton(self, text="Open deck in Anki  →  click Rebuild", height=40,
+        self.open_btn = ctk.CTkButton(self, text="Open AMBOSS Queue in Anki", height=40,
                                       font=ctk.CTkFont(size=14, weight="bold"),
                                       command=self.open_deck)
         self.open_btn.pack(fill="x")
@@ -196,16 +165,7 @@ class App(ctk.CTk):
     def refresh_status(self):
         try:
             anki("version", timeout=2)
-            decks = anki("deckNames", timeout=2)
             self.status.configure(text="●  Connected to Anki", text_color=GREEN)
-            n = pull_count()
-            self.queue_lbl.configure(
-                text=f"Rebuild will pull {n} card{'s' if n != 1 else ''}",
-                text_color=MUTED if n <= CONFIRM_ABOVE else RED)
-            if FILTERED_DECK in decks:
-                self.setup_card.pack_forget()
-            elif not self.setup_card.winfo_ismapped():
-                self.setup_card.pack(fill="x", pady=(10, 0), after=self.status)
             return True
         except Exception:
             self.status.configure(
@@ -222,10 +182,10 @@ class App(ctk.CTk):
                 a, d = add_text_cards(parse_cloze_lines(query))
                 self.total += a
                 dup = f"\n{d} already in Anki: skipped" if d else ""
-                self.big.configure(text=f"✓  {a} cards created{dup}\n\nNow click Rebuild in Anki"
+                self.big.configure(text=f"✓  {a} cards created{dup}"
                                    if a else f"Nothing new to create{dup}",
                                    text_color=GREEN if a else MUTED)
-                self.write(f"{a} cards created in '{OWN_DECK}', {d} duplicates skipped.")
+                self.write(f"{a} cards created in '{QUEUE_DECK}', {d} duplicates skipped.")
             except Exception as e:
                 self.write(f"Error: {e}")
             return
@@ -247,38 +207,17 @@ class App(ctk.CTk):
             self.write(f"Error: {e}")
 
     def finish(self, cards):
-        n, u, k = queue_cards(cards)
+        n, r, u, k = queue_cards(cards)
         self.total += n
-        note = f"\n{k} left alone (already studied, suspended or buried)" if k else ""
+        parts = [f"{n} added to {QUEUE_DECK}"] if n else []
+        if r:
+            parts.append(f"{r} reset to new")
+        note = f"\n{k} already in the queue: left alone" if k else ""
         if n:
-            self.big.configure(text=f"✓  {n} new cards queued{note}\n\nNow click Rebuild in Anki",
-                               text_color=GREEN)
+            self.big.configure(text=f"✓  {', '.join(parts)}{note}", text_color=GREEN)
         else:
-            self.big.configure(text=f"Nothing new to queue{note}", text_color=MUTED)
-        self.write(f"{n} new queued ({u} unsuspended), {k} left alone. Total: {self.total}")
-        self.refresh_status()
-
-    def clear_click(self):
-        """Two-click clear: first click arms, second (within 4s) removes the tags."""
-        if not self.clear_armed:
-            self.clear_armed = True
-            self.clear_btn.configure(text="Click again", fg_color=RED, text_color="white")
-            self.after(4000, self.disarm_clear)
-            return
-        self.disarm_clear()
-        try:
-            n = clear_queue()
-            self.write(f"Cleared queue: {n} cards untagged. Click Rebuild in Anki.")
-            self.big.configure(text=f"Queue cleared ({n} cards)\n\nNow click Rebuild in Anki",
-                               text_color=MUTED)
-            self.refresh_status()
-        except Exception as e:
-            self.write(f"Error: {e}")
-
-    def disarm_clear(self):
-        self.clear_armed = False
-        self.clear_btn.configure(text="Clear queue", fg_color="transparent",
-                                 text_color=("#222", "#ddd"))
+            self.big.configure(text=f"Nothing new to add{note}", text_color=MUTED)
+        self.write(f"{n} added ({r} reset, {u} unsuspended), {k} already there. Total: {self.total}")
 
     def confirm_yes(self):
         cards, self.pending = self.pending, None
@@ -293,7 +232,7 @@ class App(ctk.CTk):
 
     def open_deck(self):
         try:
-            anki("guiDeckOverview", name=FILTERED_DECK)
+            anki("guiDeckOverview", name=QUEUE_DECK)
         except Exception as e:
             self.write(f"Couldn't open deck: {e}")
 
